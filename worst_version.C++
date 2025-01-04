@@ -40,7 +40,27 @@ int main() {
     }
 
     //op指令部分
-    //string op = lines[i].substr(0, lines[i].find(' '));
+    string op = lines[1].substr(0, lines[1].find(' '));
+    cout << op << endl<<endl;
+
+    //find reg
+    size_t firstSpace = lines[1].find(' ');
+    std::string operands = lines[1].substr(firstSpace + 1);
+    size_t dollar1 = operands.find('$'); 
+    size_t comma = operands.find(',');   
+    std::string reg1 = operands.substr(dollar1, comma - dollar1);
+    size_t openParen = operands.find('(');  
+    size_t dollar2 = operands.find('$', openParen); 
+    size_t closeParen = operands.find(')'); 
+    std::string reg2 = operands.substr(dollar2, closeParen - dollar2);
+
+    std::cout << "目標寄存器: " << reg1 << std::endl;
+    std::cout << "基址寄存器: " << reg2 << std::endl;
+
+    
+
+
+
 
 
 
