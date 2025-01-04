@@ -42,20 +42,49 @@ int main() {
     //op指令部分
     string op = lines[1].substr(0, lines[1].find(' '));
     cout << op << endl<<endl;
+//存取目標暫存器和來源暫存器
+    std::vector<std::vector<std::string>> regMatrix(lineCount);
 
-    //find reg
-    size_t firstSpace = lines[1].find(' ');
-    std::string operands = lines[1].substr(firstSpace + 1);
-    size_t dollar1 = operands.find('$'); 
-    size_t comma = operands.find(',');   
-    std::string reg1 = operands.substr(dollar1, comma - dollar1);
-    size_t openParen = operands.find('(');  
-    size_t dollar2 = operands.find('$', openParen); 
-    size_t closeParen = operands.find(')'); 
-    std::string reg2 = operands.substr(dollar2, closeParen - dollar2);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        size_t firstSpace = lines[i].find(' ');
+        if (firstSpace != std::string::npos) {
+            std::string operands = lines[i].substr(firstSpace + 1);
+            size_t pos = 0;
+            while ((pos = operands.find('$', pos)) != std::string::npos) {
+                size_t end = operands.find_first_of(", )", pos); 
+                if (end == std::string::npos) {
+                    end = operands.size();
+                }
+                std::string reg = operands.substr(pos, end - pos);
+                regMatrix[i].push_back(reg); 
+                pos = end; 
+            }
+        }
+    }
+    //測試
+    std::cout << "寄存器矩陣：" << std::endl;
+    for (size_t i = 0; i < regMatrix.size(); ++i) {
+        std::cout << "第 " << i + 1 << " 行: ";
+        for (const auto& reg : regMatrix[i]) {
+            std::cout << reg << " ";
+        }
+        std::cout << std::endl;
+    }
+    // 判斷是否有上一行的目標寄存器等於下一行的來源寄存器
+    for (size_t i = 1; i < regMatrix.size(); ++i) {
+        if (!regMatrix[i - 1].empty()) {
+            std::string targetReg = regMatrix[i - 1][0]; 
+            bool matchFound = false;
 
-    std::cout << "目標寄存器: " << reg1 << std::endl;
-    std::cout << "基址寄存器: " << reg2 << std::endl;
+            // 檢查下一行的來源暫存器
+            for (size_t j = 1; j < regMatrix[i].size(); ++j) { 
+                if (regMatrix[i][j] == targetReg) {
+                    matchFound = true;
+                    break;
+                }
+            }
+        }
+    }
 
     
 
