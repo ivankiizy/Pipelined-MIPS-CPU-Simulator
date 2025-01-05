@@ -5,6 +5,8 @@
 using namespace std;
 
 int main() {
+
+
     // 輸入多行文字
     std::string input;
     std::cout << "請輸入多行文字，結束請按 Ctrl+D (Linux/Mac) 或 Ctrl+Z (Windows):" << std::endl;
@@ -15,13 +17,12 @@ int main() {
     }
 
     int lineCount = lines.size(); // 計算行數
-    std::cout << "輸入的行數為: " << lineCount << std::endl;
 
     std::vector<std::vector<std::string>> matrices(lineCount);
 
 
     //插入的ARRAY
-    std::vector<std::string> pipelineStages = { "if","id", "ex", "mem", "wb"};
+    std::vector<std::string> pipelineStages = { "if","id",  "ex", "mem", "wb" };
 
 
 
@@ -77,7 +78,7 @@ int main() {
 
     //op指令部分
     string op = lines[1].substr(0, lines[1].find(' '));
-    
+
     //存取目標暫存器和來源暫存器
     std::vector<std::vector<std::string>> regMatrix(lineCount);
 
@@ -87,22 +88,22 @@ int main() {
             std::string operands = lines[i].substr(firstSpace + 1);
             size_t pos = 0;
             while ((pos = operands.find('$', pos)) != std::string::npos) {
-                size_t end = operands.find_first_of(", )", pos); 
+                size_t end = operands.find_first_of(", )", pos);
                 if (end == std::string::npos) {
                     end = operands.size();
                 }
                 std::string reg = operands.substr(pos, end - pos);
-                regMatrix[i].push_back(reg); 
-                pos = end; 
+                regMatrix[i].push_back(reg);
+                pos = end;
             }
         }
     }
 
 
-    
 
-//這一部份有bug
-    // 判斷是否有上一行的目標寄存器等於下一行的來源寄存器
+
+    //這一部份有bug
+        // 判斷是否有上一行的目標寄存器等於下一行的來源寄存器
     for (size_t i = 1; i < regMatrix.size(); ++i) {
         if (!regMatrix[i - 1].empty()) {
             std::string targetReg = regMatrix[i - 1][0];
@@ -112,47 +113,43 @@ int main() {
             for (size_t j = 1; j < regMatrix[i].size(); ++j) {
                 if (regMatrix[i][j] == targetReg) {
                     matchFound = true;
-                    break;
                 }
-            }
-            //主要是lw部分 這個完成add部分照抄
-            if (op == "lw" && matchFound == 1) {
 
                 auto& previousRow = matrices[i - 1];
                 auto& currentRow = matrices[i];
+                //lw的處理
+                std::vector<std::string> pipelineStages = { "if","id",  "ex", "mem", "wb" };
+                if (op == "lw" && matchFound == 1) {
 
-                // 找出上一行的所有 "id" 的位置
-                std::vector<size_t> idPositions;
-                for (size_t j = 0; j < previousRow.size(); ++j) {
-                    if (previousRow[j] == "id") {
-                        idPositions.push_back(j);
+                    auto exePos = std::find(previousRow.begin(), previousRow.end(), "ex");
+                    auto memPos = std::find(previousRow.begin(), previousRow.end(), "mem");
+
+                    // 根据上一行 "ex" 和 "wb" 之间的位置填充 "id"
+                    if (exePos != previousRow.end() && memPos != previousRow.end()) {
+
+                        size_t exeIndex = exePos - previousRow.begin();
+                        size_t memIndex = memPos - previousRow.begin();
+
+                        //currentRow[exeIndex] = "id";
+                        //currentRow[memIndex] = "id";
+                        currentRow.insert(currentRow.begin() + exeIndex, "id");
                     }
                 }
-                // 根据上一行的 "id" 位置填充 "if"
-                for (size_t pos : idPositions) {
-                    currentRow.insert(currentRow.begin() + pos, " ");
-                    currentRow[pos] = "if";
-                }
 
-                // 找出上一行 "ex" 和 "wb" 的位置
                 auto exePos = std::find(previousRow.begin(), previousRow.end(), "ex");
-                auto memPos = std::find(previousRow.begin(), previousRow.end(), "mem");
-
-                // 根据上一行 "ex" 和 "wb" 之间的位置填充 "id"
-                if (exePos != previousRow.end() && memPos != previousRow.end()) {
-                    size_t exeIndex = exePos - previousRow.begin() - 1;
-                    size_t memIndex = memPos - previousRow.begin();
-                    currentRow[exeIndex + 1] = "id";
-                    currentRow[memIndex] = "id";
+                size_t exeIndex = exePos - previousRow.begin();
+                //id後面插入if的處理
+                auto idPos = std::find(previousRow.begin(), previousRow.end(), "id");
+                for (size_t idIndex = idPos - previousRow.begin();idIndex < exeIndex - 1;idIndex++) {
+                    currentRow.insert(currentRow.begin() + idIndex, "if");
                 }
+
+
             }
-
-
-
 
         }
     }
- //到這裡  
+    //到這裡  
 
 
 
@@ -186,14 +183,18 @@ int main() {
 
         for (size_t row = 0; row < matrices.size(); ++row) {
             if (col < matrices[row].size()) {
-                std::cout << matrices[row][col] << " "; 
+                std::cout << matrices[row][col] << " ";
             }
             else {
-                std::cout << "  "; 
+                std::cout << "  ";
             }
         }
         std::cout << std::endl;
     }
+
+
+
+
 
     return 0;
 }
