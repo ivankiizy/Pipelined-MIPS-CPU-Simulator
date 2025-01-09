@@ -1,0 +1,640 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <unordered_map>
+#include <string>
+
+using namespace std;
+
+ofstream outputFile("output.txt");
+
+class MIPS {
+public:
+    // 32 個暫存器
+    int registers[32];
+
+    // 32 字記憶體 (每個字為 4 個位元組)，用來存放數據
+    vector<int> memory;
+
+    // 程式計數器 (Program Counter)
+    int programCounter;
+
+    // 寄存器名稱對應到索引的映射表
+    unordered_map<string, int> registerMap;
+
+    // 流水線各階段緩衔寄存器
+    string IF_ID;  // IF -> ID: 指令緩衝
+    struct Instruction {
+        int rs, rt, rd, offset;
+        int rsValue;
+        int rtValue;
+        string outpu;// 操作數，根據不同指令而有所不同
+    };
+    Instruction ID_EX;  // ID -> EX: 解碼後的指令
+    // 這是 EX_MEM 寄存器結構
+    struct EX_MEM {
+        int ALUResult;    // ALU 計算結果 (地址或算術運算結果)
+        int PC;      // 用於存放記憶體寫入的資料 (對於 sw 指令)
+        int rt;           // 存儲目標寄存器 (對於 lw, sw, add, sub 等)
+        int Branch;      // 是否發生分支
+        int MemRead;     // 記憶體讀取信號
+        int MemWrite;    // 記憶體寫入信號
+        int RegWrite;    // 寄存器寫入信號
+        int MemToReg;    // 記憶體讀取結果是否寫回寄存器
+        string outpu;
+    };
+
+    // 記得在 MIPS 類別中加入 EX_MEM 寄存器
+    EX_MEM EX_MEM_reg;
+    int PC_IF;     // 保存 IF 階段的 PC 值
+    int PC_ID;     // 保存 ID 階段的 PC 值
+
+    // MEM_WB 寄存器結構
+    struct MEM_WB {
+        int ALUResult;   // ALU運算結果
+        //int MemData;     // 來自記憶體的數據
+        int rt;          // 寄存器寫入目標
+        int RegWrite;   // 是否寫回寄存器
+        int MemToReg;   // 是否從記憶體寫回寄存器
+        string outpu;
+    };
+
+    MEM_WB MEM_WB_reg;  // 新增 MEM_WB 寄存器
+
+    // 控制信號
+    struct ControlSignal {
+        int ALUSrc;      // 是否使用立即數
+        int RegDst;      // 決定寄存器寫回目標（rd或rt）
+        int RegWrite;    // 是否寫回寄存器
+        int MemRead;     // 是否讀取記憶體
+        int MemWrite;    // 是否寫入記憶體
+        int Branch;      // 是否發生分支
+        int MemToReg;    // 是否從記憶體寫回寄存器
+        int ALUOp;       // 決定ALU操作類型（加、減、等）
+    };
+
+    ControlSignal controlSignal;  // 控制信號
+
+    int ForwardA = 0;
+    int ForwardB = 0;
+    int taken_error = 0;
+    int ID_stall = 0;
+    int EX_stall = 0;
+    int MEM_stall = 0;
+    int WB_stall = 0;
+
+    // 初始化處理器
+    MIPS() {
+        // 設定暫存器
+        for (int i = 0; i < 32; i++) {
+            if (i == 0) {
+                registers[i] = 0;  // $0暫存器的值為 0
+            }
+            else {
+                registers[i] = 1;  // 其他暫存器的預設值為 1
+            }
+        }
+
+        // 設定記憶體 (32 個 word, 預設值為 1)
+        memory.resize(32, 1);
+
+        // 設定程式計數器初始值
+        programCounter = 0;
+
+        // 設定寄存器名稱與對應索引的映射
+        registerMap = {
+            {"$0", 0}, {"$1", 1}, {"$2", 2}, {"$3", 3}, {"$4", 4},
+            {"$5", 5}, {"$6", 6}, {"$7", 7}, {"$8", 8}, {"$9", 9},
+            {"$10", 10}, {"$11", 11}, {"$12", 12}, {"$13", 13},
+            {"$14", 14}, {"$15", 15}, {"$16", 16}, {"$17", 17},
+            {"$18", 18}, {"$19", 19}, {"$20", 20}, {"$21", 21},
+            {"$22", 22}, {"$23", 23}, {"$24", 24}, {"$25", 25},
+            {"$26", 26}, {"$27", 27}, {"$28", 28}, {"$29", 29},
+            {"$30", 30}, {"$31", 31}
+        };
+
+        // 初始化流水線寄存器
+        IF_ID = "";  // IF -> ID 階段的指令緩衝設為空
+        ID_EX = { -1, -1, -1, 0 };  // 解碼後的指令設為空/無效
+        EX_MEM_reg = { 0, 0, -1, false, false, false, false };  // EX -> MEM 階段寄存器
+        MEM_WB_reg = { 0, -1, false, false };  // MEM -> WB 階段寄存器
+    }
+
+    // 顯示目前的暫存器內容
+    void displayRegisters() {
+        outputFile << "Registers:" << endl;
+        for (int i = 0; i < 32; i++) {
+            outputFile << "$" << i << " ";
+        }
+        outputFile << endl;
+        for (int i = 0; i < 32; i++) {
+            outputFile << registers[i] << " ";
+        }
+        outputFile << endl;
+    }
+
+    // 顯示目前的記憶體內容 (數據記憶體)
+    void displayMemory() {
+        outputFile << "Data Memory:" << endl;
+        for (int i = 0; i < 32; i++) {
+            outputFile << "Memory[" << i << "] ";
+        }
+        outputFile << endl;
+        for (int i = 0; i < 32; i++) {
+            outputFile << memory[i] << " ";
+        }
+        outputFile << endl;
+    }
+
+    // IF 階段: 指令抓取
+    void instructionFetch(vector<string>& instructionMemory) {
+        if (programCounter / 4 < instructionMemory.size()) {
+
+            // 根據 programCounter 抓取指令
+            IF_ID = instructionMemory[programCounter / 4];
+
+            // 保存當前的 PC 值，並將其傳遞給 ID 階段
+            PC_IF = programCounter;
+
+            // 當 IF 階段完成後，程式計數器增加 4
+            programCounter += 4;
+        }
+        else {
+            //cout << "IF: No more instructions to fetch." << endl;
+        }
+    }
+
+    // ID 階段 : 指令解碼
+    void instructionDecode() {
+        if (!IF_ID.empty()) {
+            string instruction = IF_ID;
+            string op = "";  // 操作碼
+            string reg1 = "", reg2 = "", reg3 = "";
+            int offset = 0;
+
+            // 解析指令
+            int i = 0;
+            while (i < instruction.size() && instruction[i] != ' ') {
+                op += instruction[i++];  // 讀取操作碼
+            }
+            i++;  // 跳過空格
+
+            ID_EX.outpu = op;
+            outputFile << ID_EX.outpu << " ID" << endl;
+
+            //cout << "ID: Decoding instruction: " << instruction << endl;
+            if (op == "lw" || op == "sw") {
+                // 解析 lw 或 sw 指令
+                while (i < instruction.size() && instruction[i] != ',') {
+                    reg1 += instruction[i++];  // 讀取寄存器名稱
+                }
+                i++;  // 跳過逗號
+                i++;  // 跳過空白
+                while (i < instruction.size() && instruction[i] != '(') {
+                    reg2 += instruction[i++];  // 讀取寄存器名稱
+                }
+                i++;  // 跳過 '('
+                while (i < instruction.size() && instruction[i] != ')') {
+                    reg3 += instruction[i++];  // 讀取寄存器名稱
+                }
+                i++;  // 跳過 ')'
+
+                offset = stoi(reg2);  // 偏移量
+                int rs = registerMap[reg3];  // 讀取 $rs
+                int rt = registerMap[reg1];  // 讀取 $rt
+
+                //cout << "ID: lw/sw: Register " << reg1 << " (rt) = " << rt << ", Register " << reg3 << " (rs) = " << rs << ", offset = " << offset << endl;
+
+                // 保存解碼後的結果到結構體中
+                ID_EX.rs = rs;
+                ID_EX.rt = rt;
+                ID_EX.offset = offset;
+
+                // 控制信號設定
+                controlSignal.ALUSrc = 1;   // 使用立即數
+                controlSignal.RegDst = false;  // 使用 rt
+                controlSignal.RegWrite = 1; // 需要寫回寄存器
+                controlSignal.MemRead = 1; // 需要讀取記憶體
+                controlSignal.MemWrite = false;
+                controlSignal.Branch = false;
+                controlSignal.ALUOp = false;
+                if (op == "lw") {
+                    controlSignal.MemToReg = true;
+                }
+                else {
+                    controlSignal.MemToReg = -1;
+                    controlSignal.RegDst = -1;
+                    controlSignal.RegWrite = 0;
+                    controlSignal.MemWrite = 1;
+                    controlSignal.MemRead = 0;
+                }
+            }
+            else if (op == "beq") {
+                // 解析 beq 指令
+                while (i < instruction.size() && instruction[i] != ',') {
+                    reg1 += instruction[i++];  // 讀取寄存器名稱
+                }
+                i++;  // 跳過逗號
+                i++;  // 跳過空白
+                while (i < instruction.size() && instruction[i] != ',') {
+                    reg2 += instruction[i++];  // 讀取寄存器名稱
+                }
+                i++;  // 跳過逗號
+                i++;  // 跳過空白
+                while (i < instruction.size()) {
+                    reg3 += instruction[i++];  // 讀取偏移量
+                }
+                offset = stoi(reg3);  // 偏移量
+
+                int rs = registerMap[reg1];
+                int rt = registerMap[reg2];
+
+                //cout << "ID: beq: Register " << reg1 << " (rs) = " << rs << ", Register " << reg2 << " (rt) = " << rt << ", offset = " << offset << endl;
+
+                // 保存解碼後的結果到結構體中
+                ID_EX.rs = rs;
+                ID_EX.rt = rt;
+                ID_EX.offset = offset;
+
+                // 控制信號設定
+                controlSignal.ALUSrc = false;
+                controlSignal.RegDst = -1;
+                controlSignal.RegWrite = false;
+                controlSignal.MemRead = false;
+                controlSignal.MemWrite = false;
+                controlSignal.Branch = 1;  // 需要分支
+                controlSignal.ALUOp = 1;  // 執行比較
+                controlSignal.MemToReg = -1;
+            }
+            else if (op == "add" || op == "sub") {
+                // 解析算術指令
+                while (i < instruction.size() && instruction[i] != ',') {
+                    reg1 += instruction[i++];  // 讀取寄存器名稱
+                }
+                i++;  // 跳過逗號
+                i++;  // 跳過空白
+                while (i < instruction.size() && instruction[i] != ',') {
+                    reg2 += instruction[i++];  // 讀取寄存器名稱
+                }
+                i++;  // 跳過逗號
+                i++;  // 跳過空白
+                while (i < instruction.size()) {
+                    reg3 += instruction[i++];  // 讀取寄存器名稱
+                }
+
+                int rs = registerMap[reg2];
+                int rt = registerMap[reg3];
+                int rd = registerMap[reg1];
+
+                //cout << "ID: add/sub: Register " << reg1 << " (rs) = " << rs << ", Register " << reg2 << " (rt) = " << rt << ", Register " << reg3 << " (rd) = " << rd << endl;
+
+                // 保存解碼後的結果到結構體中
+                ID_EX.rs = rs;
+                ID_EX.rt = rt;
+                ID_EX.rd = rd;
+
+                // 控制信號設定
+                controlSignal.ALUSrc = false;
+                controlSignal.RegDst = 1;  // 使用 rd
+                controlSignal.RegWrite = 1; // 需要寫回寄存器
+                controlSignal.MemRead = false;
+                controlSignal.MemWrite = false;
+                controlSignal.Branch = false;
+                controlSignal.ALUOp = 1;   // 執行加減運算
+                controlSignal.MemToReg = false;
+                if (op == "add") {
+                    controlSignal.ALUOp = 0;
+                }
+            }
+            // (其餘指令處理...)
+            ForwardA = 0;
+            ForwardB = 0;
+
+            if (MEM_WB_reg.RegWrite == 1 && (MEM_WB_reg.rt != 0)
+                && (MEM_WB_reg.rt == ID_EX.rs)) {
+                ForwardA = 1;
+            }
+
+            if (MEM_WB_reg.RegWrite == 1 && (MEM_WB_reg.rt != 0)
+                && (MEM_WB_reg.rt == ID_EX.rt)) {
+                ForwardB = 1;
+            }
+            if (EX_MEM_reg.RegWrite && (EX_MEM_reg.rt != 0)
+                && (EX_MEM_reg.rt == ID_EX.rs)) {
+                if (EX_MEM_reg.MemRead == 1) {
+                    ID_stall += 1;
+
+                    return;
+                }
+                ForwardA = 2;
+            }
+
+            if (EX_MEM_reg.RegWrite == 1 && (EX_MEM_reg.rt != 0)
+                && (EX_MEM_reg.rt == ID_EX.rt)) {
+                if (EX_MEM_reg.MemRead == 1) {
+                    ID_stall += 1;
+
+                    return;
+                }
+                ForwardB = 2;
+            }
+            switch (ForwardA)
+            {
+            case 0:
+                ID_EX.rsValue = registers[ID_EX.rs];
+                break;
+            case 1:
+                ID_EX.rsValue = MEM_WB_reg.ALUResult;
+                break;
+            case 2:
+                ID_EX.rsValue = EX_MEM_reg.ALUResult;
+                break;
+            default:
+                break;
+            }
+            switch (ForwardB)
+            {
+            case 0:
+                ID_EX.rtValue = registers[ID_EX.rt];
+                break;
+            case 1:
+                ID_EX.rtValue = MEM_WB_reg.ALUResult;
+                break;
+            case 2:
+                ID_EX.rtValue = EX_MEM_reg.ALUResult;
+                break;
+            default:
+                break;
+            }
+
+        }
+    }
+
+    // EX 階段: 執行運算與分支判斷
+    // EX 階段: 執行運算與準備傳遞到 MEM 階段
+    void execute() {
+        // 讀取來自 ID 階段的信號
+        int rsValue = ID_EX.rsValue;
+        int rtValue = ID_EX.rtValue;
+
+        int imm = ID_EX.offset;                // 立即數
+        int aluResult = 0;                  // ALU 計算結果
+
+        EX_MEM_reg.outpu = ID_EX.outpu;
+        outputFile << EX_MEM_reg.outpu << " EX "
+            << (controlSignal.RegDst != -1 ? to_string(controlSignal.RegDst) : "X") << " "
+            << (controlSignal.ALUSrc != -1 ? to_string(controlSignal.ALUSrc) : "X") << " "
+            << (controlSignal.Branch != -1 ? to_string(controlSignal.Branch) : "X") << " "
+            << (controlSignal.MemRead != -1 ? to_string(controlSignal.MemRead) : "X") << " "
+            << (controlSignal.MemWrite != -1 ? to_string(controlSignal.MemWrite) : "X") << " "
+            << (controlSignal.RegWrite != -1 ? to_string(controlSignal.RegWrite) : "X") << " "
+            << (controlSignal.MemToReg != -1 ? to_string(controlSignal.MemToReg) : "X")
+            << endl;
+        //cout << "rs/rt" << rsValue << " " << rtValue << endl;
+        // 根據 ALUSrc 控制信號決定 ALU 的第二個操作數
+        int aluOperand2;
+        if (controlSignal.ALUSrc == 1) {
+            aluOperand2 = imm;  // 立即數作為 ALU 的第二個操作數
+        }
+        else {
+            aluOperand2 = rtValue;  // 使用 rt 寄存器的數值
+        }
+        // 根據 ALUOp 控制信號選擇 ALU 的操作
+        switch (controlSignal.ALUOp) {
+        case 0:  // 假設 ALUOp = 0 為加法操作（例如 lw, sw，或者加法指令）
+            aluResult = rsValue + aluOperand2;
+            break;
+
+        case 1:  // 假設 ALUOp = 1 為減法操作（例如 beq）
+            aluResult = rsValue - aluOperand2;
+            break;
+
+        default:
+            //cout << "Unknown ALUOp" << endl;
+            break;
+        }
+
+        // 設定 EX_MEM 寄存器的 ALU 結果，這會傳遞到 MEM 階段
+        EX_MEM_reg.ALUResult = aluResult;
+
+        // 根據 RegDst 控制信號選擇寫回寄存器（rd 或 rt）
+        if (controlSignal.RegDst == 1) {
+            EX_MEM_reg.rt = ID_EX.rd;  // R 型指令使用 rd 作為目標寄存器
+        }
+        else {
+            EX_MEM_reg.rt = ID_EX.rt;  // I 型指令使用 rt 作為目標寄存器
+        }
+
+        // 設定其他控制信號到 EX_MEM 寄存器
+        EX_MEM_reg.MemRead = controlSignal.MemRead;  // 例如 lw 指令需要 MemRead
+        EX_MEM_reg.MemWrite = controlSignal.MemWrite; // 例如 sw 指令需要 MemWrite
+        EX_MEM_reg.RegWrite = controlSignal.RegWrite; // lw/sw 需要寫回寄存器
+        EX_MEM_reg.MemToReg = controlSignal.MemToReg; // lw 需要從記憶體中讀取數據
+        EX_MEM_reg.Branch = controlSignal.Branch; // lw 需要從記憶體中讀取數據
+        EX_MEM_reg.PC = programCounter + imm * 4 - 4;
+
+
+        if (EX_MEM_reg.Branch == 1 && !EX_MEM_reg.ALUResult) {
+            //cout << EX_MEM_reg.PC << endl;
+            programCounter = EX_MEM_reg.PC;
+            taken_error = 1;
+        }
+    }
+
+
+    // MEM 階段: 記憶體操作
+    void memoryAccess() {
+
+        MEM_WB_reg.outpu = EX_MEM_reg.outpu;
+        outputFile << MEM_WB_reg.outpu << " MEM "
+            << (EX_MEM_reg.Branch != -1 ? to_string(EX_MEM_reg.Branch) : "X") << " "
+            << (EX_MEM_reg.MemRead != -1 ? to_string(EX_MEM_reg.MemRead) : "X") << " "
+            << (EX_MEM_reg.MemWrite != -1 ? to_string(EX_MEM_reg.MemWrite) : "X") << " "
+            << (EX_MEM_reg.RegWrite != -1 ? to_string(EX_MEM_reg.RegWrite) : "X") << " "
+            << (EX_MEM_reg.MemToReg != -1 ? to_string(EX_MEM_reg.MemToReg) : "X")
+            << endl;
+
+        MEM_WB_reg.ALUResult = EX_MEM_reg.ALUResult;
+
+        if (EX_MEM_reg.MemRead == 1) {
+            // 讀取記憶體 (lw 指令)
+            int data = memory[EX_MEM_reg.ALUResult / 4];  // 假設記憶體為 4 字節對齊
+
+            //cout << "MEM: Data read from memory: " << data << endl;
+
+            // 準備 MEM_WB 寄存器
+            MEM_WB_reg.ALUResult = data;
+        }
+        else if (EX_MEM_reg.MemWrite == 1) {
+            // 寫入記憶體 (sw 指令)
+            memory[EX_MEM_reg.ALUResult / 4] = registers[EX_MEM_reg.rt];
+            //cout << "MEM: Writing to memory at address " << EX_MEM_reg.ALUResult << endl;
+        }
+        else {
+            //cout << "MEM" << endl;
+        }
+
+        // 將 ALU 結果傳遞給 MEM_WB 寄存器
+
+        MEM_WB_reg.rt = EX_MEM_reg.rt;
+        MEM_WB_reg.RegWrite = EX_MEM_reg.RegWrite;
+        MEM_WB_reg.MemToReg = EX_MEM_reg.MemToReg;  // 保存是否來自記憶體
+
+    }
+
+    // WB 階段: 寄存器寫回
+    void writeBack() {
+
+        outputFile << MEM_WB_reg.outpu << " WB "
+            << (MEM_WB_reg.RegWrite != -1 ? to_string(MEM_WB_reg.RegWrite) : "X") << " "
+            << (MEM_WB_reg.MemToReg != -1 ? to_string(MEM_WB_reg.MemToReg) : "X")
+            << endl;
+
+        if (MEM_WB_reg.RegWrite == 1) {
+            if (MEM_WB_reg.MemToReg == 1) {
+                // 從記憶體讀取數據寫回寄存器 (lw 指令)
+                registers[MEM_WB_reg.rt] = MEM_WB_reg.ALUResult;
+                //cout << "WB: Writing data to register $" << MEM_WB_reg.rt << ": " << MEM_WB_reg.MemData << endl;
+            }
+            else {
+                // 使用 ALU 結果寫回寄存器 (add, sub 指令)
+                registers[MEM_WB_reg.rt] = MEM_WB_reg.ALUResult;
+                //cout << "WB: Writing ALU result to register $" << MEM_WB_reg.rt << ": " << MEM_WB_reg.ALUResult << endl;
+            }
+        }
+        else {
+            //cout << "WB" << endl;
+        }
+    }
+
+    // 執行指令
+    void executeInstruction(vector<string>& instructionMemory) {
+        bool end = true;
+        int i = 1;
+        // 讓程式不斷執行，直到 programCounter 超出範圍
+        while (1) {
+            // 執行 WB 階段
+            if (MEM_WB_reg.MemToReg == false && MEM_WB_reg.RegWrite == false) {
+
+                end = false;
+                outputFile << "Clock Cycle " << i++ << ":\n";
+            }
+            else {
+
+                outputFile << "Clock Cycle " << i++ << ":\n";
+                writeBack();
+                MEM_WB_reg = { 0, -1, false, false };
+                end = true;
+            }
+
+            // 執行 MEM 階段
+            if (EX_MEM_reg.Branch == false && EX_MEM_reg.RegWrite == false && EX_MEM_reg.MemWrite == false && EX_MEM_reg.MemToReg == false && EX_MEM_reg.MemRead == false) {
+                MEM_WB_reg = { 0, -1, false, false };
+
+            }
+            else {
+                memoryAccess();
+                EX_MEM_reg = { 0, 0, -1, false, false, false, false,false };
+                end = true;
+            }
+
+            // 執行 EX 階段
+            if (controlSignal.ALUOp == false && controlSignal.ALUSrc == false && controlSignal.Branch == false && controlSignal.MemRead == false && controlSignal.MemToReg == false && controlSignal.MemWrite == false && controlSignal.RegDst == false && controlSignal.RegWrite == false) {
+                EX_MEM_reg = { 0, 0, -1, false, false, false, false,false };
+            }
+            else {
+                if (ID_stall) {
+                    ID_stall -= 1;
+                    controlSignal = { false,false, false, false, false, false, false, false };
+                }
+                else {
+                    execute();
+                    controlSignal = { false,false, false, false, false, false, false, false };
+                    end = true;
+                }
+            }
+
+            // 執行 ID 階段
+            if (IF_ID == "") {
+                ID_EX = { -1, -1, -1, 0 };
+                controlSignal = { false,false, false, false, false, false, false, false };
+            }
+            else {
+                if (!taken_error) {
+                    instructionDecode();
+                    end = true;
+                }
+                else {
+
+                    taken_error = 0;
+                }
+            }
+            // 執行 IF 階段
+            if (programCounter / 4 < instructionMemory.size()) {
+                int i = 0;
+                string op_ = "";
+                // 根據 programCounter 抓取指令
+                string op_get = instructionMemory[programCounter / 4];
+
+                while (i < op_get.size() && op_get[i] != ' ') {
+                    op_ += op_get[i++];  // 讀取操作碼
+                }
+                outputFile << op_ << " IF" << endl;
+                if (!ID_stall) {
+                    instructionFetch(instructionMemory);
+                    end = true;
+                }
+            }
+            else {
+                IF_ID = "";
+            }
+
+            if (!(programCounter / 4 < instructionMemory.size() or end)) {
+                break;
+            }
+        }
+        outputFile << "total Cycle: " << i - 2 << endl;
+    }
+};
+
+int main() {
+    MIPS mips;
+
+    // 打開檔案
+    ifstream inputFile("test3.txt");
+
+    // 檢查檔案是否成功打開
+    if (!inputFile.is_open()) {
+        cout << "無法打開檔案！" << endl;
+        return 1;
+    }
+
+    // 設定指令記憶體中的一些指令 (字串形式)
+    vector<string> instructionMemory = {};
+
+    string line;
+
+    // 讀取檔案每一行並將其加入 vector 中
+    while (getline(inputFile, line)) {
+        if (!line.empty()) {
+            instructionMemory.push_back(line);
+        }
+    }
+
+    // 關閉檔案
+    inputFile.close();
+    // 顯示初始的暫存器、記憶體
+    //mips.displayRegisters();
+    //mips.displayMemory();
+
+    // 動態執行指令
+    mips.executeInstruction(instructionMemory);
+
+    // 顯示執行後的暫存器與記憶體
+    mips.displayRegisters();
+    mips.displayMemory();
+
+    outputFile.close();
+
+    return 0;
+}
